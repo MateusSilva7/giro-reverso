@@ -1,0 +1,25 @@
+[project]
+name = "giro-reverso"
+version = "1.0.0"
+description = "Giro Reverso: logística reversa de estoque parado (loja → CD) numa rede de autopeças — identificação, ciclo diário, fila, acompanhamento por etapa e visão de gestão. Dados sintéticos."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "openpyxl>=3.1.5",
+    "pandas>=2.2",
+    "polars>=1.0",
+    "python-dotenv>=1.0",
+    "sqlalchemy>=2.0",
+    "streamlit>=1.50",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
