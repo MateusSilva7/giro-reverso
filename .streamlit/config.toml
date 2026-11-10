@@ -1,0 +1,19 @@
+# Tema fixo claro. Sem isso o Streamlit segue o tema do sistema (escuro em
+# muitas máquinas) e o texto padrão vira quase branco.
+# Fundo neutro: cor só em status, bordas de card e títulos.
+[theme]
+base = "light"
+primaryColor = "#006F73"
+backgroundColor = "#F6F7F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#2E2D2C"
+
+[server]
+headless = true
+enableXsrfProtection = true
+
+[client]
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,158 @@
+<!doctype html>
+<!--
+Componente Streamlit vanilla (sem build, sem pacote novo) para o quadro kanban
+com arrastar-e-soltar. Protocolo de mensagens do Streamlit reimplementado à mão
+(postMessage) — não depende de streamlit-component-lib nem de npm.
+
+Contrato com Python (ver ui/kanban.py):
+  args.estilo  → string CSS (o mesmo bloco de ui/tema.py) injetada aqui dentro,
+                 pra usar exatamente os mesmos tokens/classes (.badge, .gr-*).
+  args.colunas → [{ nome, cards: [{id, status, html, rotulo}], nota_extra, total }]
+                 (rotulo = texto puro do pedido, ex. "180001/PP": vira o nome acessível do botão "Abrir detalhe")
+                 (total = contagem real da coluna; cards pode vir cortada por um limite)
+  args.selecionado → id do pedido aberto no painel de detalhe (realce visual)
+
+Valor devolvido a Python (setComponentValue):
+  {acao: "abrir", pedido_id, seq}                — clique em "Abrir detalhe"
+  {acao: "mover", pedido_id, de, para, seq}       — soltou o card noutra coluna
+"seq" é um contador que só sobe em ação do usuário — o Python usa isso pra não
+reprocessar o mesmo evento nos redesenhos automáticos do quadro (a cada 30s).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 4px 2px 2px; font-family: 'Source Sans Pro', system-ui, -apple-system, sans-serif; }
+  .kb-board { display: flex; gap: 10px; overflow-x: auto; align-items: flex-start; }
+  .kb-col { flex: 1 1 0; min-width: 160px; }
+  .kb-col.kb-dragover { background: var(--surface-muted, #F0F2F2); border-radius: 8px; }
+  .kb-card { background: var(--surface, #fff); border: 1px solid var(--border, #ddd);
+    border-left: 4px solid var(--brand, #006F73); border-radius: 8px; padding: 10px 11px;
+    margin-bottom: 9px; cursor: grab; box-sizing: border-box; }
+  .kb-card:active { cursor: grabbing; }
+  .kb-card.kb-dragging { opacity: .35; }
+  .kb-card.kb-status-atencao { border-left-color: var(--alert-edge, #C0392B); }
+  .kb-card.kb-status-fim { border-left-color: var(--ok-edge, #1F7A58); }
+  .kb-card.kb-selecionado { outline: 2px solid var(--brand, #006F73); outline-offset: 1px; }
+  /* <button> de verdade (teclado: Tab foca, Enter e Espaço abrem), com cara de link */
+  .kb-open { cursor: pointer; color: var(--brand, #006F73); font: inherit; font-weight: 700; font-size: .74rem;
+    margin-top: 6px; padding: 2px 0; background: none; border: 0; text-align: left; }
+  .kb-open:hover { text-decoration: underline; }
+  .kb-open:focus-visible { outline: 2px solid var(--brand, #006F73); outline-offset: 2px; border-radius: 3px; }
+</style>
+<style id="estilo-tema"></style>
+</head>
+<body>
+<div id="board" class="kb-board"></div>
+<script>
+(function () {
+  "use strict";
+  // Semeado com Date.now() (não 0): se o iframe for remontado (navegação, reload),
+  // o novo contador não recomeça do zero e não coincide com um kanban_seq antigo
+  // que o Python ainda tenha guardado — o que faria a próxima ação real ser
+  // silenciosamente ignorada como "já processada".
+  var seq = Date.now();
+  var arrastando = null; // {pedidoId, deEtapa}
+
+  function post(type, extra) {
+    var msg = Object.assign({ isStreamlitMessage: true, type: type }, extra || {});
+    window.parent.postMessage(msg, "*");
+  }
+  function avisarPronto() { post("streamlit:componentReady", { apiVersion: 1 }); }
+  function ajustarAltura() { post("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight }); }
+  function enviarValor(valor) { post("streamlit:setComponentValue", { value: valor, dataType: "json" }); }
+
+  function desenhar(args) {
+    var estiloEl = document.getElementById("estilo-tema");
+    var estiloNovo = args.estilo || "";
+    if (estiloEl.textContent !== estiloNovo) estiloEl.textContent = estiloNovo;
+
+    var board = document.getElementById("board");
+    board.innerHTML = "";
+
+    (args.colunas || []).forEach(function (col, idxCol) {
+      var elCol = document.createElement("div");
+      elCol.className = "kb-col";
+
+      var head = document.createElement("div");
+      head.className = "gr-colhead";
+      // col.total = a contagem real da coluna (col.cards pode vir cortada pelo limite
+      // de exibição); sem total, cai pra col.cards.length pra não quebrar chamadas antigas.
+      var contagem = (typeof col.total === "number") ? col.total : col.cards.length;
+      head.innerHTML = "<span>" + col.nome + "</span><span class=\"gr-count\">" + contagem + "</span>";
+      elCol.appendChild(head);
+
+      if (!col.cards.length) {
+        var vazio = document.createElement("div");
+        vazio.className = "gr-vazio";
+        vazio.textContent = "Nenhum pedido";
+        elCol.appendChild(vazio);
+      }
+
+      col.cards.forEach(function (card) {
+        var elCard = document.createElement("div");
+        elCard.className = "kb-card kb-status-" + card.status;
+        if (args.selecionado && String(args.selecionado) === String(card.id)) {
+          elCard.classList.add("kb-selecionado");
+          elCard.setAttribute("aria-current", "true");
+        }
+        elCard.draggable = true;
+        elCard.innerHTML = card.html + '<button type="button" class="kb-open">Abrir detalhe</button>';
+
+        elCard.addEventListener("dragstart", function (e) {
+          arrastando = { pedidoId: card.id, deEtapa: idxCol };
+          elCard.classList.add("kb-dragging");
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", String(card.id));
+        });
+        elCard.addEventListener("dragend", function () {
+          elCard.classList.remove("kb-dragging");
+          arrastando = null;
+        });
+        var elAbrir = elCard.querySelector(".kb-open");
+        // setAttribute (texto, nunca HTML): o rótulo é só o nome acessível do botão
+        elAbrir.setAttribute("aria-label", card.rotulo ? "Abrir detalhe do pedido " + card.rotulo : "Abrir detalhe");
+        elAbrir.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          seq += 1;
+          enviarValor({ acao: "abrir", pedido_id: card.id, seq: seq });
+        });
+
+        elCol.appendChild(elCard);
+      });
+
+      if (col.nota_extra) {
+        var nota = document.createElement("div");
+        nota.className = "gr-vazio";
+        nota.textContent = col.nota_extra;
+        elCol.appendChild(nota);
+      }
+
+      elCol.addEventListener("dragover", function (e) { e.preventDefault(); elCol.classList.add("kb-dragover"); });
+      elCol.addEventListener("dragleave", function () { elCol.classList.remove("kb-dragover"); });
+      elCol.addEventListener("drop", function (e) {
+        e.preventDefault();
+        elCol.classList.remove("kb-dragover");
+        if (!arrastando || arrastando.deEtapa === idxCol) return;
+        seq += 1;
+        enviarValor({ acao: "mover", pedido_id: arrastando.pedidoId, de: arrastando.deEtapa, para: idxCol, seq: seq });
+      });
+
+      board.appendChild(elCol);
+    });
+
+    ajustarAltura();
+  }
+
+  window.addEventListener("message", function (event) {
+    // Só a página do Streamlit que hospeda este iframe manda no componente: outra janela não redesenha o quadro.
+    if (event.source !== window.parent) return;
+    var d = event.data;
+    if (d && d.type === "streamlit:render") desenhar(d.args || {});
+  });
+  new ResizeObserver(ajustarAltura).observe(document.body);
+  avisarPronto();
+})();
+</script>
+</body>
+</html>
